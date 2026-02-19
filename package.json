@@ -2,8 +2,8 @@
   "name": "klm-inc",
   "displayName": "KLM inc",
   "description": "Normalize index.html by injecting required snippets and migrating popular libraries to safe CDNJS links.",
-  "version": "0.0.1",
-  "publisher": "44b8dd40-3eb8-67e5-9d6c-609e8e2e3306",
+  "version": "0.0.2",
+  "publisher": "boostclicks",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -11,7 +11,7 @@
     "type": "git",
     "url": "https://github.com/Leontev-E/klm-inc.git"
   },
-  "icon": "assets/icon.png",
+  "icon": "assets/iconnew.png",
   "categories": [
     "Other"
   ],

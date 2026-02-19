@@ -9,11 +9,14 @@ if (!isset($rawClick) && empty($_COOKIE['_subid'])) {
 }
 ?>`;
 
-const DOMONETKA_SNIPPET = `<script>
+const DOMONETKA_INIT_SNIPPET = `<script>
 const domonetkaRaw = '{domonetka}';
 const domonetka = decodeURIComponent(domonetkaRaw);
-</script>
-<script src="https://cdn.jsdelivr.net/gh/Leontev-E/pxl/indexPxl.js"></script>`;
+</script>`;
+const DOMONETKA_SCRIPT_SNIPPET =
+  '<script src="https://cdn.jsdelivr.net/gh/Leontev-E/pxl/indexPxl.js"></script>';
+const TEMPLATE_PHP_FILES = ["success.php", "error.php"];
+const API_FILENAME = "api.php";
 
 const LIBRARY_RULES = [
   {
@@ -453,17 +456,11 @@ const LIBRARY_RULES = [
 const SCRIPT_TAG_RE =
   /<script\b[^>]*\bsrc\s*=\s*(['"])([^"']+)\1[^>]*>\s*<\/script>/gi;
 const LINK_TAG_RE = /<link\b[^>]*\bhref\s*=\s*(['"])([^"']+)\1[^>]*>/gi;
-const VERSION_RE = /\/(\d+\.\d+(?:\.\d+)?(?:[-_][A-Za-z0-9.]+)?)\//;
+const DOMONETKA_INIT_BLOCK_RE =
+  /<script\b[^>]*>\s*const\s+domonetkaRaw\s*=\s*['"]\{domonetka\}['"];\s*const\s+domonetka\s*=\s*decodeURIComponent\(domonetkaRaw\);\s*<\/script>/gi;
 
-function buildCdnUrl(rule, version) {
-  const safeVersion = version || rule.defaultVersion;
-  return `https://cdnjs.cloudflare.com/ajax/libs/${rule.slug}/${safeVersion}/${rule.file}`;
-}
-
-function detectVersion(resource) {
-  const clean = stripQueryAndHash(resource);
-  const match = clean.match(VERSION_RE);
-  return match ? match[1] : null;
+function buildCdnUrl(rule) {
+  return `https://cdnjs.cloudflare.com/ajax/libs/${rule.slug}/${rule.defaultVersion}/${rule.file}`;
 }
 
 function stripQueryAndHash(value) {
@@ -475,7 +472,12 @@ function isLocalResource(value) {
 }
 
 function normalizeForMatch(value) {
-  return decodeURIComponent(stripQueryAndHash(value)).toLowerCase();
+  const raw = stripQueryAndHash(value);
+  try {
+    return decodeURIComponent(raw).toLowerCase();
+  } catch (error) {
+    return raw.toLowerCase();
+  }
 }
 
 function detectRule(type, value) {
@@ -486,6 +488,66 @@ function detectRule(type, value) {
     }
     return rule.patterns.some((pattern) => pattern.test(normalized));
   });
+}
+
+function detectPxlFile(normalizedResource) {
+  if (!normalizedResource.includes("leontev-e/pxl")) {
+    return null;
+  }
+  if (normalizedResource.includes("indexpxl.js")) {
+    return "indexPxl.js";
+  }
+  if (normalizedResource.includes("/pxl.js")) {
+    return "pxl.js";
+  }
+  return null;
+}
+
+function buildPxlScriptUrl(fileName) {
+  return `https://cdn.jsdelivr.net/gh/Leontev-E/pxl/${fileName}`;
+}
+
+function normalizePxlScripts(content, report) {
+  let keptPxlScript = false;
+
+  return content.replace(SCRIPT_TAG_RE, (fullTag, quote, src) => {
+    const normalized = normalizeForMatch(src);
+    const fileName = detectPxlFile(normalized);
+    if (!fileName) {
+      return fullTag;
+    }
+
+    if (keptPxlScript) {
+      report.removedDuplicateDomonetkaBlocks += 1;
+      return "";
+    }
+    keptPxlScript = true;
+
+    const canonical = buildPxlScriptUrl(fileName);
+    if (normalizeForMatch(src) !== normalizeForMatch(canonical)) {
+      report.normalizedPxlScripts += 1;
+    }
+    return `<script src="${canonical}"></script>`;
+  });
+}
+
+function dedupeDomonetkaInitBlocks(content, report) {
+  let seen = false;
+  return content.replace(DOMONETKA_INIT_BLOCK_RE, () => {
+    if (seen) {
+      report.removedDuplicateDomonetkaBlocks += 1;
+      return "";
+    }
+    seen = true;
+    return DOMONETKA_INIT_SNIPPET;
+  });
+}
+
+function hasDomonetkaInit(content) {
+  return (
+    /const\s+domonetkaRaw\s*=\s*['"]\{domonetka\}['"]\s*;/i.test(content) &&
+    /decodeURIComponent\s*\(\s*domonetkaRaw\s*\)/i.test(content)
+  );
 }
 
 function resolveLocalPath(resource, htmlDir, workspaceFolders) {
@@ -518,6 +580,7 @@ function isInsideWorkspace(filePath, workspaceFolders) {
 
 function replaceScriptAndLinks(content, htmlDir, workspaceFolders, report) {
   const localFiles = new Set();
+  const seenLibraries = new Set();
 
   const withScripts = content.replace(SCRIPT_TAG_RE, (fullTag, quote, src) => {
     const rule = detectRule("script", src);
@@ -525,19 +588,25 @@ function replaceScriptAndLinks(content, htmlDir, workspaceFolders, report) {
       return fullTag;
     }
 
-    const version = detectVersion(src);
-    const cdnUrl = buildCdnUrl(rule, version);
+    const cdnUrl = buildCdnUrl(rule);
     const replacement = `<script src="${cdnUrl}"></script>`;
-
-    if (normalizeForMatch(src) === normalizeForMatch(cdnUrl)) {
-      return fullTag;
-    }
+    const key = `${rule.type}:${rule.slug}:${rule.file}`.toLowerCase();
 
     if (isLocalResource(src)) {
       const resolved = resolveLocalPath(src, htmlDir, workspaceFolders);
       if (resolved && isInsideWorkspace(resolved, workspaceFolders)) {
         localFiles.add(resolved);
       }
+    }
+
+    if (seenLibraries.has(key)) {
+      report.removedDuplicateLibraries += 1;
+      return "";
+    }
+    seenLibraries.add(key);
+
+    if (normalizeForMatch(src) === normalizeForMatch(cdnUrl)) {
+      return fullTag;
     }
 
     report.replacedLibraries.push({ name: rule.name, from: src, to: cdnUrl });
@@ -550,19 +619,25 @@ function replaceScriptAndLinks(content, htmlDir, workspaceFolders, report) {
       return fullTag;
     }
 
-    const version = detectVersion(href);
-    const cdnUrl = buildCdnUrl(rule, version);
+    const cdnUrl = buildCdnUrl(rule);
     const replacement = `<link rel="stylesheet" href="${cdnUrl}">`;
-
-    if (normalizeForMatch(href) === normalizeForMatch(cdnUrl)) {
-      return fullTag;
-    }
+    const key = `${rule.type}:${rule.slug}:${rule.file}`.toLowerCase();
 
     if (isLocalResource(href)) {
       const resolved = resolveLocalPath(href, htmlDir, workspaceFolders);
       if (resolved && isInsideWorkspace(resolved, workspaceFolders)) {
         localFiles.add(resolved);
       }
+    }
+
+    if (seenLibraries.has(key)) {
+      report.removedDuplicateLibraries += 1;
+      return "";
+    }
+    seenLibraries.add(key);
+
+    if (normalizeForMatch(href) === normalizeForMatch(cdnUrl)) {
+      return fullTag;
     }
 
     report.replacedLibraries.push({ name: rule.name, from: href, to: cdnUrl });
@@ -581,19 +656,26 @@ function ensurePhpSnippet(content, report) {
 }
 
 function ensureDomonetkaSnippet(content, report) {
-  if (
-    content.includes("const domonetkaRaw = '{domonetka}';") ||
-    content.includes("indexPxl.js")
-  ) {
+  const initExists = hasDomonetkaInit(content);
+  const pxlScriptExists = /leontev-e\/pxl\/(?:indexpxl|pxl)\.js/i.test(content.toLowerCase());
+
+  if (initExists && pxlScriptExists) {
     return content;
   }
 
   if (/<\/title>/i.test(content)) {
     report.addedDomonetkaBlock = true;
-    return content.replace(/<\/title>/i, (match) => `${match}\n${DOMONETKA_SNIPPET}`);
+    const blocksToInsert = [];
+    if (!initExists) {
+      blocksToInsert.push(DOMONETKA_INIT_SNIPPET);
+    }
+    if (!pxlScriptExists) {
+      blocksToInsert.push(DOMONETKA_SCRIPT_SNIPPET);
+    }
+    return content.replace(/<\/title>/i, (match) => `${match}\n${blocksToInsert.join("\n")}`);
   }
 
-  report.warnings.push("`</title>` не найден, блок domonetka не вставлен.");
+  report.warnings.push("</title> not found, domonetka block was not inserted.");
   return content;
 }
 
@@ -645,53 +727,139 @@ async function applyFullDocumentEdit(document, nextContent) {
   await document.save();
 }
 
-async function processIndexHtml() {
+function getSiteRoot(document, workspaceFolders) {
+  const workspaceForDocument = vscode.workspace.getWorkspaceFolder(document.uri);
+  if (workspaceForDocument) {
+    return workspaceForDocument.uri.fsPath;
+  }
+  return workspaceFolders[0].uri.fsPath;
+}
+
+async function syncSitePhpFiles(siteRoot, extensionRoot, report) {
+  for (const templateFileName of TEMPLATE_PHP_FILES) {
+    const sourcePath = path.join(extensionRoot, templateFileName);
+    const targetPath = path.join(siteRoot, templateFileName);
+
+    try {
+      const templateContent = await fs.readFile(sourcePath, "utf8");
+      let existed = true;
+      try {
+        const stat = await fs.stat(targetPath);
+        existed = stat.isFile();
+      } catch (error) {
+        existed = false;
+      }
+
+      await fs.writeFile(targetPath, templateContent, "utf8");
+      report.syncedPhpPages.push({
+        file: templateFileName,
+        action: existed ? "replaced" : "created"
+      });
+    } catch (error) {
+      report.warnings.push(`Cannot sync ${templateFileName}: ${error.message}`);
+    }
+  }
+}
+
+async function ensureApiPhp(siteRoot, report) {
+  const apiPath = path.join(siteRoot, API_FILENAME);
+  try {
+    const stat = await fs.stat(apiPath);
+    if (stat.isFile()) {
+      return;
+    }
+    report.warnings.push(`${API_FILENAME} exists but is not a file.`);
+    return;
+  } catch (error) {
+    // File does not exist, create an empty one.
+  }
+
+  await fs.writeFile(apiPath, "", "utf8");
+  report.createdApiFile = true;
+}
+
+async function processIndexHtml(extensionRoot) {
   const workspaceFolders = vscode.workspace.workspaceFolders || [];
   if (!workspaceFolders.length) {
-    vscode.window.showErrorMessage("KLM inc: откройте папку проекта в VS Code.");
+    vscode.window.showErrorMessage("KLM inc: open a project folder in VS Code.");
     return;
   }
 
   const document = await getIndexHtmlDocument();
-  if (!document) {
-    vscode.window.showErrorMessage("KLM inc: файл index.html не найден.");
-    return;
-  }
-
   const report = {
     addedPhpBlock: false,
     addedDomonetkaBlock: false,
+    normalizedPxlScripts: 0,
+    removedDuplicateDomonetkaBlocks: 0,
     replacedLibraries: [],
+    removedDuplicateLibraries: 0,
     deletedLocalFiles: [],
+    syncedPhpPages: [],
+    createdApiFile: false,
     warnings: []
   };
 
-  const original = document.getText();
-  const htmlDir = path.dirname(document.uri.fsPath);
+  const siteRoot = document
+    ? getSiteRoot(document, workspaceFolders)
+    : workspaceFolders[0].uri.fsPath;
 
-  let next = ensurePhpSnippet(original, report);
-  next = ensureDomonetkaSnippet(next, report);
-  const replacements = replaceScriptAndLinks(next, htmlDir, workspaceFolders, report);
-  next = replacements.content;
+  if (document) {
+    const original = document.getText();
+    const htmlDir = path.dirname(document.uri.fsPath);
 
-  if (next !== original) {
-    await applyFullDocumentEdit(document, next);
+    let next = ensurePhpSnippet(original, report);
+    next = normalizePxlScripts(next, report);
+    next = dedupeDomonetkaInitBlocks(next, report);
+    next = ensureDomonetkaSnippet(next, report);
+    const replacements = replaceScriptAndLinks(next, htmlDir, workspaceFolders, report);
+    next = replacements.content;
+
+    if (next !== original) {
+      await applyFullDocumentEdit(document, next);
+    }
+
+    await deleteLocalLibraries(replacements.localFiles, workspaceFolders, report);
+  } else {
+    report.warnings.push("index.html not found, skipped HTML normalization.");
   }
 
-  await deleteLocalLibraries(replacements.localFiles, workspaceFolders, report);
+  await syncSitePhpFiles(siteRoot, extensionRoot, report);
+  await ensureApiPhp(siteRoot, report);
 
-  const changed =
-    report.addedPhpBlock || report.addedDomonetkaBlock || report.replacedLibraries.length > 0;
+  const changed = Boolean(
+    report.addedPhpBlock ||
+      report.addedDomonetkaBlock ||
+      report.normalizedPxlScripts > 0 ||
+      report.removedDuplicateDomonetkaBlocks > 0 ||
+      report.replacedLibraries.length > 0 ||
+      report.removedDuplicateLibraries > 0 ||
+      report.syncedPhpPages.length > 0 ||
+      report.createdApiFile
+  );
   if (!changed) {
-    vscode.window.showInformationMessage("KLM inc: изменений не требуется, файл уже нормализован.");
+    vscode.window.showInformationMessage("KLM inc: no changes required.");
     return;
   }
 
+  const phpPagesSummary =
+    report.syncedPhpPages.length > 0
+      ? `synced php pages: ${report.syncedPhpPages
+          .map((item) => `${item.file} (${item.action})`)
+          .join(", ")}`
+      : "synced php pages: 0";
+
   const summary = [
-    report.addedPhpBlock ? "PHP-блок добавлен" : "PHP-блок уже был",
-    report.addedDomonetkaBlock ? "domonetka-блок добавлен" : "domonetka-блок уже был/пропущен",
-    `библиотек заменено: ${report.replacedLibraries.length}`,
-    `локальных файлов удалено: ${report.deletedLocalFiles.length}`
+    report.addedPhpBlock ? "php block added" : "php block already present",
+    report.addedDomonetkaBlock
+      ? "domonetka block added"
+      : "domonetka block already present or skipped",
+    `pxl links normalized: ${report.normalizedPxlScripts}`,
+    `duplicate domonetka blocks removed: ${report.removedDuplicateDomonetkaBlocks}`,
+    `libraries replaced: ${report.replacedLibraries.length}`,
+    `duplicate libraries removed: ${report.removedDuplicateLibraries}`,
+    `local files deleted: ${report.deletedLocalFiles.length}`,
+    phpPagesSummary,
+    report.createdApiFile ? `${API_FILENAME} created` : `${API_FILENAME} already exists`
   ].join(", ");
 
   if (report.warnings.length) {
@@ -704,10 +872,10 @@ async function processIndexHtml() {
 function activate(context) {
   const disposable = vscode.commands.registerCommand("klmInc.processIndexHtml", async () => {
     try {
-      await processIndexHtml();
+      await processIndexHtml(context.extensionPath);
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
-      vscode.window.showErrorMessage(`KLM inc: ошибка обработки index.html: ${message}`);
+      vscode.window.showErrorMessage(`KLM inc: failed to process index.html: ${message}`);
     }
   });
 
