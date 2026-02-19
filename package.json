@@ -2,7 +2,7 @@
   "name": "klm-inc",
   "displayName": "KLM inc",
   "description": "Normalize index.html by injecting required snippets and migrating popular libraries to safe CDNJS links.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "boostclicks",
   "engines": {
     "vscode": "^1.85.0"
@@ -31,7 +31,7 @@
     "commands": [
       {
         "command": "klmInc.processIndexHtml",
-        "title": "KLM inc: Process index.html"
+        "title": "KLM inc: Process index.html/index.php"
       }
     ],
     "keybindings": [

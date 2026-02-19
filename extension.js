@@ -699,23 +699,36 @@ async function deleteLocalLibraries(filesToDelete, workspaceFolders, report) {
   }
 }
 
-async function getIndexHtmlDocument() {
+function isSupportedIndexFile(filePath) {
+  const base = path.basename(filePath).toLowerCase();
+  return base === "index.html" || base === "index.php";
+}
+
+async function getIndexDocument() {
   const active = vscode.window.activeTextEditor?.document;
-  if (active && path.basename(active.uri.fsPath).toLowerCase() === "index.html") {
+  if (active && isSupportedIndexFile(active.uri.fsPath)) {
     return active;
   }
 
-  const indexFiles = await vscode.workspace.findFiles(
+  const indexHtmlFiles = await vscode.workspace.findFiles(
     "**/index.html",
     "**/{node_modules,.git,dist,build}/**",
     1
   );
-
-  if (!indexFiles.length) {
-    return null;
+  if (indexHtmlFiles.length) {
+    return vscode.workspace.openTextDocument(indexHtmlFiles[0]);
   }
 
-  return vscode.workspace.openTextDocument(indexFiles[0]);
+  const indexPhpFiles = await vscode.workspace.findFiles(
+    "**/index.php",
+    "**/{node_modules,.git,dist,build}/**",
+    1
+  );
+  if (indexPhpFiles.length) {
+    return vscode.workspace.openTextDocument(indexPhpFiles[0]);
+  }
+
+  return null;
 }
 
 async function applyFullDocumentEdit(document, nextContent) {
@@ -785,7 +798,7 @@ async function processIndexHtml(extensionRoot) {
     return;
   }
 
-  const document = await getIndexHtmlDocument();
+  const document = await getIndexDocument();
   const report = {
     addedPhpBlock: false,
     addedDomonetkaBlock: false,
@@ -820,7 +833,7 @@ async function processIndexHtml(extensionRoot) {
 
     await deleteLocalLibraries(replacements.localFiles, workspaceFolders, report);
   } else {
-    report.warnings.push("index.html not found, skipped HTML normalization.");
+    report.warnings.push("index.html/index.php not found, skipped page normalization.");
   }
 
   await syncSitePhpFiles(siteRoot, extensionRoot, report);
@@ -875,7 +888,7 @@ function activate(context) {
       await processIndexHtml(context.extensionPath);
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
-      vscode.window.showErrorMessage(`KLM inc: failed to process index.html: ${message}`);
+      vscode.window.showErrorMessage(`KLM inc: failed to process index file: ${message}`);
     }
   });
 

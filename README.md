@@ -1,6 +1,6 @@
 # KLM inc
 
-`KLM inc` is a VS Code extension for automatic cleanup and normalization of `index.html`.
+`KLM inc` is a VS Code extension for automatic cleanup and normalization of `index.html` and `index.php`.
 
 ## What it does
 
@@ -14,21 +14,21 @@
 
 ## Command
 
-- `KLM inc: Process index.html`
+- `KLM inc: Process index.html/index.php`
 
 Default keybinding:
 - Windows/Linux: `Ctrl+Alt+Shift+P`
 
 ## Notes
 
-- The extension processes `index.html` in the active editor, or the first `index.html` found in the workspace.
+- The extension processes `index.html` / `index.php` in the active editor, or the first matching index file found in the workspace.
 - Save your project in git before running, because local library files can be removed when migrated to CDNJS.
 
 ---
 
 ## Русская версия
 
-`KLM inc` — расширение VS Code для автоматической очистки и нормализации `index.html`.
+`KLM inc` — расширение VS Code для автоматической очистки и нормализации `index.html` и `index.php`.
 
 ## Что делает расширение
 
@@ -42,12 +42,12 @@ Default keybinding:
 
 ## Команда
 
-- `KLM inc: Process index.html`
+- `KLM inc: Process index.html/index.php`
 
 Горячая клавиша по умолчанию:
 - Windows/Linux: `Ctrl+Alt+Shift+P`
 
 ## Примечания
 
-- Расширение обрабатывает `index.html` в активном редакторе или первый найденный `index.html` в workspace.
+- Расширение обрабатывает `index.html` / `index.php` в активном редакторе или первый найденный index-файл в workspace.
 - Перед запуском рекомендуется сохранить проект в git, так как локальные файлы библиотек могут быть удалены при миграции на CDNJS.
