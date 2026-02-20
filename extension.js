@@ -1,5 +1,6 @@
 const fs = require("fs/promises");
 const path = require("path");
+const { URL } = require("url");
 const vscode = require("vscode");
 
 const PHP_SNIPPET = `<?php
@@ -26,6 +27,22 @@ const LIBRARY_RULES = [
     defaultVersion: "3.7.1",
     file: "jquery.min.js",
     patterns: [/jquery(?:\.min)?(?:[-.]\d[\w.-]*)?\.js/i]
+  },
+  {
+    name: "jQuery Masked Input",
+    type: "script",
+    slug: "jquery.maskedinput",
+    defaultVersion: "1.4.1",
+    file: "jquery.maskedinput.min.js",
+    patterns: [/jquery\.maskedinput(?:\.min)?\.js|maskedinput(?:\.min)?\.js/i]
+  },
+  {
+    name: "jQuery blockUI",
+    type: "script",
+    slug: "jquery.blockUI",
+    defaultVersion: "2.70",
+    file: "jquery.blockUI.min.js",
+    patterns: [/jquery\.blockui(?:\.min)?\.js|blockui(?:\.min)?\.js/i]
   },
   {
     name: "Bootstrap JS",
@@ -458,6 +475,7 @@ const SCRIPT_TAG_RE =
 const LINK_TAG_RE = /<link\b[^>]*\bhref\s*=\s*(['"])([^"']+)\1[^>]*>/gi;
 const DOMONETKA_INIT_BLOCK_RE =
   /<script\b[^>]*>\s*const\s+domonetkaRaw\s*=\s*['"]\{domonetka\}['"];\s*const\s+domonetka\s*=\s*decodeURIComponent\(domonetkaRaw\);\s*<\/script>/gi;
+const LEADING_PHP_BLOCK_RE = /^\s*<\?php[\s\S]*?\?>\s*/i;
 
 function buildCdnUrl(rule) {
   return `https://cdnjs.cloudflare.com/ajax/libs/${rule.slug}/${rule.defaultVersion}/${rule.file}`;
@@ -491,13 +509,19 @@ function detectRule(type, value) {
 }
 
 function detectPxlFile(normalizedResource) {
-  if (!normalizedResource.includes("leontev-e/pxl")) {
+  const hasPxlSource =
+    normalizedResource.includes("leontev-e/pxl/") ||
+    normalizedResource.includes("leontev-e.github.io/pxl/") ||
+    normalizedResource.includes("raw.githubusercontent.com/leontev-e/pxl/");
+
+  if (!hasPxlSource) {
     return null;
   }
+
   if (normalizedResource.includes("indexpxl.js")) {
     return "indexPxl.js";
   }
-  if (normalizedResource.includes("/pxl.js")) {
+  if (/(^|\/)pxl\.js$/i.test(normalizedResource) || normalizedResource.includes("/pxl.js")) {
     return "pxl.js";
   }
   return null;
@@ -505,6 +529,40 @@ function detectPxlFile(normalizedResource) {
 
 function buildPxlScriptUrl(fileName) {
   return `https://cdn.jsdelivr.net/gh/Leontev-E/pxl/${fileName}`;
+}
+
+function hasPxlScript(content) {
+  let found = false;
+  content.replace(SCRIPT_TAG_RE, (fullTag, quote, src) => {
+    if (detectPxlFile(normalizeForMatch(src))) {
+      found = true;
+    }
+    return fullTag;
+  });
+  return found;
+}
+
+function buildGoogleFontsUrl(href) {
+  let url;
+  try {
+    url = new URL(href);
+  } catch (error) {
+    try {
+      url = new URL(href, "https://fonts.googleapis.com");
+    } catch (innerError) {
+      return null;
+    }
+  }
+
+  const pathname = url.pathname || "";
+  if (!/^\/css2?$/i.test(pathname)) {
+    return null;
+  }
+  if (!url.searchParams.has("family")) {
+    return null;
+  }
+
+  return `https://fonts.googleapis.com${pathname}${url.search}`;
 }
 
 function normalizePxlScripts(content, report) {
@@ -614,6 +672,25 @@ function replaceScriptAndLinks(content, htmlDir, workspaceFolders, report) {
   });
 
   const withLinks = withScripts.replace(LINK_TAG_RE, (fullTag, quote, href) => {
+    const googleFontsUrl = buildGoogleFontsUrl(href);
+    if (googleFontsUrl) {
+      const replacement = `<link rel="stylesheet" href="${googleFontsUrl}">`;
+      const key = `style:google-fonts:${normalizeForMatch(googleFontsUrl)}`;
+
+      if (seenLibraries.has(key)) {
+        report.removedDuplicateLibraries += 1;
+        return "";
+      }
+      seenLibraries.add(key);
+
+      if (normalizeForMatch(href) === normalizeForMatch(googleFontsUrl)) {
+        return fullTag;
+      }
+
+      report.replacedLibraries.push({ name: "Google Fonts", from: href, to: googleFontsUrl });
+      return replacement;
+    }
+
     const rule = detectRule("style", href);
     if (!rule) {
       return fullTag;
@@ -651,28 +728,69 @@ function ensurePhpSnippet(content, report) {
   if (content.includes("https://1chart.ru") || content.includes("empty($_COOKIE['_subid'])")) {
     return content;
   }
+
+  const leadingPhpMatch = content.match(LEADING_PHP_BLOCK_RE);
+  if (leadingPhpMatch) {
+    const leadingPhpBlock = leadingPhpMatch[0];
+    const hasRawClickCheck = /!isset\(\s*\$rawClick\s*\)/i.test(leadingPhpBlock);
+    const hasSubidCheck = /empty\(\s*\$_COOKIE\[['"]_subid['"]\]\s*\)/i.test(leadingPhpBlock);
+    if (hasRawClickCheck && !hasSubidCheck) {
+      report.replacedLegacyPhpBlock = true;
+      const rest = content.slice(leadingPhpBlock.length).replace(/^\s+/, "");
+      return `${PHP_SNIPPET}\n${rest}`;
+    }
+  }
+
   report.addedPhpBlock = true;
   return `${PHP_SNIPPET}\n${content}`;
 }
 
 function ensureDomonetkaSnippet(content, report) {
   const initExists = hasDomonetkaInit(content);
-  const pxlScriptExists = /leontev-e\/pxl\/(?:indexpxl|pxl)\.js/i.test(content.toLowerCase());
+  const pxlScriptExists = hasPxlScript(content);
 
   if (initExists && pxlScriptExists) {
     return content;
   }
 
+  if (!initExists && pxlScriptExists) {
+    let inserted = false;
+    const withInsertedInit = content.replace(SCRIPT_TAG_RE, (fullTag, quote, src) => {
+      if (!inserted && detectPxlFile(normalizeForMatch(src))) {
+        inserted = true;
+        return `${DOMONETKA_INIT_SNIPPET}\n${fullTag}`;
+      }
+      return fullTag;
+    });
+
+    if (inserted) {
+      report.addedDomonetkaBlock = true;
+      return withInsertedInit;
+    }
+  }
+
+  if (initExists && !pxlScriptExists) {
+    let inserted = false;
+    const withInsertedScript = content.replace(DOMONETKA_INIT_BLOCK_RE, (match) => {
+      if (!inserted) {
+        inserted = true;
+        return `${DOMONETKA_INIT_SNIPPET}\n${DOMONETKA_SCRIPT_SNIPPET}`;
+      }
+      return match;
+    });
+
+    if (inserted) {
+      report.addedDomonetkaBlock = true;
+      return withInsertedScript;
+    }
+  }
+
   if (/<\/title>/i.test(content)) {
     report.addedDomonetkaBlock = true;
-    const blocksToInsert = [];
-    if (!initExists) {
-      blocksToInsert.push(DOMONETKA_INIT_SNIPPET);
-    }
-    if (!pxlScriptExists) {
-      blocksToInsert.push(DOMONETKA_SCRIPT_SNIPPET);
-    }
-    return content.replace(/<\/title>/i, (match) => `${match}\n${blocksToInsert.join("\n")}`);
+    return content.replace(
+      /<\/title>/i,
+      (match) => `${match}\n${DOMONETKA_INIT_SNIPPET}\n${DOMONETKA_SCRIPT_SNIPPET}`
+    );
   }
 
   report.warnings.push("</title> not found, domonetka block was not inserted.");
@@ -801,6 +919,7 @@ async function processIndexHtml(extensionRoot) {
   const document = await getIndexDocument();
   const report = {
     addedPhpBlock: false,
+    replacedLegacyPhpBlock: false,
     addedDomonetkaBlock: false,
     normalizedPxlScripts: 0,
     removedDuplicateDomonetkaBlocks: 0,
@@ -841,6 +960,7 @@ async function processIndexHtml(extensionRoot) {
 
   const changed = Boolean(
     report.addedPhpBlock ||
+      report.replacedLegacyPhpBlock ||
       report.addedDomonetkaBlock ||
       report.normalizedPxlScripts > 0 ||
       report.removedDuplicateDomonetkaBlocks > 0 ||
@@ -862,7 +982,11 @@ async function processIndexHtml(extensionRoot) {
       : "synced php pages: 0";
 
   const summary = [
-    report.addedPhpBlock ? "php block added" : "php block already present",
+    report.replacedLegacyPhpBlock
+      ? "legacy php block replaced"
+      : report.addedPhpBlock
+        ? "php block added"
+        : "php block already present",
     report.addedDomonetkaBlock
       ? "domonetka block added"
       : "domonetka block already present or skipped",
