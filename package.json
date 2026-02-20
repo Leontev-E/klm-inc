@@ -2,7 +2,7 @@
   "name": "klm-inc",
   "displayName": "KLM inc",
   "description": "Normalize index.html by injecting required snippets and migrating popular libraries to safe CDNJS links.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "boostclicks",
   "engines": {
     "vscode": "^1.85.0"
